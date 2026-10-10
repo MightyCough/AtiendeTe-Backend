@@ -1,0 +1,211 @@
+// Menú bilingüe, mesas y pedidos de AtiendeTe.
+// Los precios son soles (PEN) con dos decimales.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Idioma {
+  es
+  en
+}
+
+enum EstadoPedido {
+  RECIBIDO
+  EN_PREPARACION
+  LISTO
+  ENTREGADO
+}
+
+model Categoria {
+  id           Int                   @id @default(autoincrement())
+  orden        Int                   @default(0)
+  productos    Producto[]
+  traducciones CategoriaTraduccion[]
+
+  @@map("categorias")
+}
+
+model CategoriaTraduccion {
+  id          Int      @id @default(autoincrement())
+  categoriaId Int
+  idioma      Idioma
+  nombre      String
+  categoria   Categoria @relation(fields: [categoriaId], references: [id], onDelete: Cascade)
+
+  @@unique([categoriaId, idioma])
+  @@map("categoria_traducciones")
+}
+
+model Producto {
+  id           Int                   @id @default(autoincrement())
+  categoriaId  Int
+  precio       Decimal               @db.Decimal(10, 2)
+  imagenUrl    String?
+  disponible   Boolean               @default(true)
+  orden        Int                   @default(0)
+  categoria    Categoria             @relation(fields: [categoriaId], references: [id], onDelete: Cascade)
+  traducciones ProductoTraduccion[]
+  adicionales  ProductoAdicional[]
+  ingredientes ProductoIngrediente[]
+  items        PedidoItem[]
+
+  @@map("productos")
+}
+
+model ProductoTraduccion {
+  id          Int      @id @default(autoincrement())
+  productoId  Int
+  idioma      Idioma
+  nombre      String
+  descripcion String
+  producto    Producto @relation(fields: [productoId], references: [id], onDelete: Cascade)
+
+  @@unique([productoId, idioma])
+  @@map("producto_traducciones")
+}
+
+model Adicional {
+  id           Int                   @id @default(autoincrement())
+  precioExtra  Decimal               @db.Decimal(10, 2)
+  traducciones AdicionalTraduccion[]
+  productos    ProductoAdicional[]
+  enItems      PedidoItemAdicional[]
+
+  @@map("adicionales")
+}
+
+model AdicionalTraduccion {
+  id          Int       @id @default(autoincrement())
+  adicionalId Int
+  idioma      Idioma
+  nombre      String
+  adicional   Adicional @relation(fields: [adicionalId], references: [id], onDelete: Cascade)
+
+  @@unique([adicionalId, idioma])
+  @@map("adicional_traducciones")
+}
+
+model Ingrediente {
+  id           Int                     @id @default(autoincrement())
+  traducciones IngredienteTraduccion[]
+  productos    ProductoIngrediente[]
+  enItems      PedidoItemIngrediente[]
+
+  @@map("ingredientes")
+}
+
+model IngredienteTraduccion {
+  id            Int         @id @default(autoincrement())
+  ingredienteId Int
+  idioma        Idioma
+  nombre        String
+  ingrediente   Ingrediente @relation(fields: [ingredienteId], references: [id], onDelete: Cascade)
+
+  @@unique([ingredienteId, idioma])
+  @@map("ingrediente_traducciones")
+}
+
+model ProductoAdicional {
+  productoId  Int
+  adicionalId Int
+  producto    Producto  @relation(fields: [productoId], references: [id], onDelete: Cascade)
+  adicional   Adicional @relation(fields: [adicionalId], references: [id], onDelete: Cascade)
+
+  @@id([productoId, adicionalId])
+  @@map("producto_adicionales")
+}
+
+model ProductoIngrediente {
+  productoId    Int
+  ingredienteId Int
+  producto      Producto    @relation(fields: [productoId], references: [id], onDelete: Cascade)
+  ingrediente   Ingrediente @relation(fields: [ingredienteId], references: [id], onDelete: Cascade)
+
+  @@id([productoId, ingredienteId])
+  @@map("producto_ingredientes")
+}
+
+model Mesa {
+  id             Int       @id @default(autoincrement())
+  numero         Int       @unique
+  online         Boolean   @default(false)
+  ultimaConexion DateTime?
+  pedidos        Pedido[]
+
+  @@map("mesas")
+}
+
+model Pedido {
+  id            Int                     @id @default(autoincrement())
+  mesaId        Int
+  idioma        Idioma
+  estado        EstadoPedido            @default(RECIBIDO)
+  total         Decimal                 @db.Decimal(10, 2)
+  creadoEn      DateTime                @default(now())
+  actualizadoEn DateTime                @updatedAt
+  mesa          Mesa                    @relation(fields: [mesaId], references: [id])
+  items         PedidoItem[]
+  historial     PedidoEstadoHistorial[]
+
+  @@index([mesaId])
+  @@index([estado])
+  @@index([creadoEn])
+  @@map("pedidos")
+}
+
+model PedidoItem {
+  id              Int                     @id @default(autoincrement())
+  pedidoId        Int
+  productoId      Int
+  cantidad        Int
+  // Precio base del producto al momento del pedido, sin adicionales.
+  precioUnitario  Decimal                 @db.Decimal(10, 2)
+  notaOriginal    String?
+  notaEs          String?
+  pedido          Pedido                  @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+  producto        Producto                @relation(fields: [productoId], references: [id])
+  adicionales     PedidoItemAdicional[]
+  sinIngredientes PedidoItemIngrediente[]
+
+  @@index([pedidoId])
+  @@map("pedido_items")
+}
+
+model PedidoItemAdicional {
+  pedidoItemId Int
+  adicionalId  Int
+  // Copia del precio extra al momento del pedido.
+  precioExtra  Decimal    @db.Decimal(10, 2)
+  pedidoItem   PedidoItem @relation(fields: [pedidoItemId], references: [id], onDelete: Cascade)
+  adicional    Adicional  @relation(fields: [adicionalId], references: [id])
+
+  @@id([pedidoItemId, adicionalId])
+  @@map("pedido_item_adicionales")
+}
+
+model PedidoItemIngrediente {
+  pedidoItemId  Int
+  ingredienteId Int
+  pedidoItem    PedidoItem  @relation(fields: [pedidoItemId], references: [id], onDelete: Cascade)
+  ingrediente   Ingrediente @relation(fields: [ingredienteId], references: [id])
+
+  @@id([pedidoItemId, ingredienteId])
+  @@map("pedido_item_ingredientes")
+}
+
+model PedidoEstadoHistorial {
+  id       Int          @id @default(autoincrement())
+  pedidoId Int
+  estado   EstadoPedido
+  creadoEn DateTime     @default(now())
+  pedido   Pedido       @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+
+  @@index([pedidoId])
+  @@map("pedido_estado_historial")
+}

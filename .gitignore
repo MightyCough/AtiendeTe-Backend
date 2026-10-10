@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+npm-debug.log*
+.DS_Store
+
+# Credenciales de la mesa. Se versiona solo config.example.h.
+firmware/include/config.h
+firmware/.pio/

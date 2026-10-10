@@ -1,0 +1,33 @@
+# Postgres y Mosquitto para el laboratorio. La API corre aparte con npm run dev.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: atiendete-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: atiende
+      POSTGRES_PASSWORD: atiende
+      POSTGRES_DB: atiendete
+    ports:
+      - "5432:5432"
+    volumes:
+      - atiendete_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atiende -d atiendete"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: atiendete-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - atiendete_mqtt:/mosquitto/data
+
+volumes:
+  atiendete_pg:
+  atiendete_mqtt:
