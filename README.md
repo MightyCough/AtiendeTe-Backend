@@ -392,15 +392,14 @@ Proyecto PlatformIO en `firmware/`, framework Arduino, placa `esp32dev`. Librer�
 
 ### Cableado del LED RGB de 4 patas
 
-La pata más larga suele ser la común. Hay que saber si el LED es de cátodo común o de ánodo común y dejarlo escrito en `config.h` (`LED_ANODO_COMUN`).
+El LED es de ánodo común. La pata más larga es la común y va a 3V3, no a GND. `LED_ANODO_COMUN` sale en true: el firmware invierte el PWM para que el valor 0 quede apagado. Si `config.h` no define ese flag, también se toma como true. Si el LED fuera de cátodo común, la pata larga iría a GND y en `config.h` hay que poner `#define LED_ANODO_COMUN false`.
 
 ```text
-ESP32 DevKit V1                         LED RGB
+ESP32 DevKit V1                         LED RGB (ánodo común)
 GPIO25 (D25) ------[220 Ω]------------- pata R
 GPIO26 (D26) ------[220 Ω]------------- pata G
 GPIO27 (D27) ------[220 Ω]------------- pata B
-GND ----------------------------------- pata común     cátodo común
-3V3 ----------------------------------- pata común     ánodo común (en vez de GND)
+3V3 ----------------------------------- pata más larga (ánodo común)
 ```
 
 Una resistencia de 220 Ω por canal (rojo, verde y azul). Sin resistencia el pico de corriente puede dañar el LED y el GPIO. `BRILLO_MAX` sale en 40 (de 255) para bajar el riesgo si todavía no hay resistencias; no reemplaza a las resistencias. Con las de 220 Ω se puede subir el brillo en `config.h`.

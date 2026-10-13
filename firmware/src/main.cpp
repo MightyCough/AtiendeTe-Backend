@@ -25,6 +25,12 @@
 #include "config.example.h"
 #endif
 
+// Un config.h copiado antes de este flag no lo define. El LED del laboratorio
+// es de ánodo común (pata larga a 3V3), así que el default es true.
+#ifndef LED_ANODO_COMUN
+#define LED_ANODO_COMUN true
+#endif
+
 static const uint8_t PIN_ROJO = 25;
 static const uint8_t PIN_VERDE = 26;
 static const uint8_t PIN_AZUL = 27;
@@ -32,6 +38,10 @@ static const uint8_t PIN_AZUL = 27;
 static const uint8_t CANAL_ROJO = 0;
 static const uint8_t CANAL_VERDE = 1;
 static const uint8_t CANAL_AZUL = 2;
+
+// LEDC a 8 bits. El duty va de 0 a BRILLO_MAX_RANGE. El tope de brillo percibido
+// sigue siendo BRILLO_MAX, que es más bajo a propósito.
+static const uint8_t BRILLO_MAX_RANGE = 255;
 
 static const unsigned long REINTENTO_MS = 3000;
 static const unsigned long LISTO_PARPADEO_MS = 6000;
@@ -66,7 +76,7 @@ bool mqttAnunciado = false;
 
 int brilloTope() {
   if (BRILLO_MAX < 1) return 1;
-  if (BRILLO_MAX > 255) return 255;
+  if (BRILLO_MAX > BRILLO_MAX_RANGE) return BRILLO_MAX_RANGE;
   return BRILLO_MAX;
 }
 
@@ -93,12 +103,13 @@ void escribirPwm(uint8_t pin, uint8_t canal, uint8_t valor) {
 #endif
 }
 
-uint8_t deber(uint8_t intensidad) {
-  // Ánodo común: el canal enciende cuando el GPIO baja.
+uint8_t deber(uint8_t valor) {
+  // Ánodo común: la pata larga está en 3V3 y el canal enciende con el GPIO en bajo.
+  // valor 0 (apagado) tiene que escribir duty completo; un duty bajo lo deja encendido.
   if (LED_ANODO_COMUN) {
-    return static_cast<uint8_t>(255 - intensidad);
+    return static_cast<uint8_t>(BRILLO_MAX_RANGE - valor);
   }
-  return intensidad;
+  return valor;
 }
 
 void color(uint8_t rojo, uint8_t verde, uint8_t azul) {
@@ -117,7 +128,11 @@ void color(uint8_t rojo, uint8_t verde, uint8_t azul) {
   escribirPwm(PIN_AZUL, CANAL_AZUL, deber(b));
 }
 
-void apagar() { color(0, 0, 0); }
+void apagar() {
+  // ENTREGADO, la tecla 4 y las fases apagadas del parpadeo.
+  // Con ánodo común los tres canales quedan en BRILLO_MAX_RANGE (duty completo).
+  color(0, 0, 0);
+}
 
 const char* nombreEstado(EstadoPedido estado) {
   switch (estado) {

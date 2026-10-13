@@ -14,9 +14,11 @@
 // Número impreso en el QR de esta mesa (el seed crea 1, 2 y 3).
 #define MESA_NUMERO 1
 
-// true: LED de ánodo común (la pata común va a 3V3).
-// false: LED de cátodo común (la pata común va a GND).
-constexpr bool LED_ANODO_COMUN = false;
+// true: ánodo común. La pata más larga (común) va a 3V3 y el PWM se invierte,
+// así el valor 0 queda apagado (duty completo).
+// false: cátodo común. La pata más larga va a GND.
+// Tiene que ser un #define. Si config.h no lo trae, el firmware asume true.
+#define LED_ANODO_COMUN true
 
 // Tope de PWM, de 1 a 255. Va bajo a propósito: sin resistencias el LED y el
 // GPIO se pueden quemar. Lo correcto es poner 220 ohm en R, G y B; con eso
