@@ -1,17 +1,19 @@
 # AtiendeTe
 
-Pedidos de mesa para el curso de IoT de la Universidad de Huánuco. El cliente lee un QR, arma el pedido en el celular (español o inglés) y la cocina lo ve en una pantalla. Cada mesa tiene un ESP32 DevKit V1 con un LED RGB que muestra el estado. Todo corre en la red local: un laptop, un router o el hotspot de un celular. No hace falta nube.
+Pedidos de mesa para el curso de IoT de la Universidad de Huánuco. El cliente lee un QR, arma el pedido en el celular (español o inglés) y la cocina lo ve en una pantalla. Una ESP32 DevKit V1 maneja un LED RGB por mesa y así muestra el estado. Todo corre en la red local: un laptop, un router o el hotspot de un celular. No hace falta nube.
 
 Este repositorio es la API, la base de datos y el firmware. El menú web (React, puerto 5173) está en otro repositorio y consume el contrato de más abajo tal cual.
 
 ```
 Celular  --QR-->  menú :5173  --HTTP/Socket.IO-->  API :3000  -->  PostgreSQL
                                                       |
-                                                      +-->  Mosquitto :1883  -->  ESP32  -->  LED
+                                                      +-->  Mosquitto :1883  -->  ESP32  -->  LED de cada mesa
 Cocina   -------------- pantalla :5173 --------------+
 ```
 
 Estados del pedido, en este orden: `RECIBIDO` → `EN_PREPARACION` → `LISTO` → `ENTREGADO`.
+
+Una placa enciende un LED por mesa. Cada LED sigue solo el estado de la suya. Sin WiFi parpadean todos en rojo. Si el WiFi está y solo falta el MQTT de una mesa, parpadea en rojo ese LED.
 
 | Estado | LED |
 | --- | --- |
@@ -20,7 +22,8 @@ Estados del pedido, en este orden: `RECIBIDO` → `EN_PREPARACION` → `LISTO` �
 | `LISTO` | verde, parpadea unos 6 segundos y queda fijo |
 | `ENTREGADO` | apagado |
 | sin pedido | apagado |
-| sin WiFi o sin MQTT | rojo, parpadeo lento |
+| sin WiFi | rojo, parpadeo lento, en todos los LED |
+| sin MQTT de esa mesa | rojo, parpadeo lento, solo ese LED |
 
 ## Requisitos en Nobara / Fedora
 
@@ -287,9 +290,9 @@ El cliente se conecta a `http://<ip>:3000` con `socket.io-client` (path por defe
 | `atiendete/mesa/{numero}/estado` | API, al crear y en cada cambio de estado | `{"pedidoId":1,"estado":"RECIBIDO"}` | sí |
 | `atiendete/mesa/{numero}/conexion` | ESP32 | texto `online` o `offline`, no JSON | sí |
 
-El firmware deja un Last Will `offline` en el tópico de conexión. Si la placa se apaga, Mosquitto avisa al backend, la mesa pasa a `online: false` y se emite `mesa:conexion`.
+El firmware abre una conexión MQTT por mesa configurada. Cada una publica `online` (retenido) en su tópico de conexión y deja un Last Will `offline` (retenido, QoS 1). Si la placa se apaga, Mosquitto marca offline todas esas mesas, el backend pone `online: false` y emite `mesa:conexion` por cada una.
 
-El LED muestra el último estado publicado para esa mesa. En la demo conviene un pedido activo por mesa: un pedido nuevo pisa el color del anterior.
+Cada LED muestra el último estado publicado para su mesa. En la demo conviene un pedido activo por mesa: un pedido nuevo pisa el color del anterior.
 
 El broker acepta conexiones anónimas en el puerto 1883. Es a propósito, para el laboratorio.
 
@@ -390,19 +393,35 @@ docker compose exec mosquitto mosquitto_pub -t 'atiendete/mesa/1/conexion' -m 'o
 
 Proyecto PlatformIO en `firmware/`, framework Arduino, placa `esp32dev`. Librerías: PubSubClient y ArduinoJson.
 
-### Cableado del LED RGB de 4 patas
+### Cableado: un LED RGB de 4 patas por mesa
 
-El LED es de ánodo común. La pata más larga es la común y va a 3V3, no a GND. `LED_ANODO_COMUN` sale en true: el firmware invierte el PWM para que el valor 0 quede apagado. Si `config.h` no define ese flag, también se toma como true. Si el LED fuera de cátodo común, la pata larga iría a GND y en `config.h` hay que poner `#define LED_ANODO_COMUN false`.
+Una sola placa maneja todas las mesas. Cada LED es de ánodo común: la pata más larga es la común y va a 3V3, no a GND. No unas las patas R, G o B de un LED con las de otro; el 3V3 sí es el mismo para todos los ánodos. `LED_ANODO_COMUN` sale en true: el firmware invierte el PWM para que el valor 0 quede apagado. Si `config.h` no define ese flag, también se toma como true. Si el LED fuera de cátodo común, la pata larga iría a GND y en `config.h` hay que poner `#define LED_ANODO_COMUN false`.
+
+Cada pata de color usa su propio canal LEDC. El cableado por defecto es el arreglo `MESAS` de `config.example.h`:
+
+| Mesa | Rojo | Verde | Azul |
+| --- | --- | --- | --- |
+| 1 | GPIO25 (D25) | GPIO26 (D26) | GPIO27 (D27) |
+| 2 | GPIO32 (D32) | GPIO33 (D33) | GPIO14 (D14) |
+| 3, opcional | GPIO18 (D18) | GPIO19 (D19) | GPIO21 (D21) |
 
 ```text
-ESP32 DevKit V1                         LED RGB (ánodo común)
+ESP32 DevKit V1                         LED mesa 1 (ánodo común)
 GPIO25 (D25) ------[220 Ω]------------- pata R
 GPIO26 (D26) ------[220 Ω]------------- pata G
 GPIO27 (D27) ------[220 Ω]------------- pata B
-3V3 ----------------------------------- pata más larga (ánodo común)
+3V3 ----------------------------------- pata más larga (ánodo)
+
+                                        LED mesa 2 (ánodo común)
+GPIO32 (D32) ------[220 Ω]------------- pata R
+GPIO33 (D33) ------[220 Ω]------------- pata G
+GPIO14 (D14) ------[220 Ω]------------- pata B
+3V3 ----------------------------------- pata más larga (ánodo)
 ```
 
-Una resistencia de 220 Ω por canal (rojo, verde y azul). Sin resistencia el pico de corriente puede dañar el LED y el GPIO. `BRILLO_MAX` sale en 40 (de 255) para bajar el riesgo si todavía no hay resistencias; no reemplaza a las resistencias. Con las de 220 Ω se puede subir el brillo en `config.h`.
+La mesa 3 no va cableada hasta que se descomenta su fila: GPIO18 rojo, GPIO19 verde, GPIO21 azul, ánodo a 3V3, 220 Ω en cada color. No uses los GPIO 34 a 39 (solo entrada) ni el 6 al 11 (flash).
+
+Una resistencia de 220 Ω por canal de cada LED. Sin resistencia el pico de corriente puede dañar el LED y el GPIO. `BRILLO_MAX` sale en 40 (de 255) para bajar el riesgo si todavía no hay resistencias; no reemplaza a las resistencias. Con las de 220 Ω se puede subir el brillo en `config.h`. Si `config.h` no define `BRILLO_MAX`, el firmware usa 40. Un `constexpr int BRILLO_MAX` de un `config.h` viejo se respeta.
 
 ### Configuración y flasheo
 
@@ -411,7 +430,27 @@ cd firmware
 cp include/config.example.h include/config.h
 ```
 
-Edita `config.h`: SSID, clave, IP del laptop (la del QR, no `localhost`), puerto 1883 y `MESA_NUMERO` (1, 2 o 3). `config.h` está en `.gitignore`.
+Edita `config.h`: SSID, clave, IP del laptop (la del QR, no `localhost`) y puerto 1883. `config.h` está en `.gitignore`.
+
+Si ya tenías un `config.h` de cuando había una sola mesa, deja `WIFI_SSID`, `WIFI_PASSWORD`, `MQTT_BROKER` y `MQTT_PORT` como están y agrega el arreglo. Borra `MESA_NUMERO`, `MESA_ID` y los pines sueltos (`PIN_ROJO`, `PIN_VERDE`, `PIN_AZUL`) si aparecen: el firmware ya no los lee. Sin este bloque igual compila, con mesa 1 en 25, 26, 27 y mesa 2 en 32, 33, 14.
+
+```cpp
+struct MesaLed {
+  uint8_t numero;
+  uint8_t rojo;
+  uint8_t verde;
+  uint8_t azul;
+};
+
+#define ATIENDETE_TIENE_MESAS
+static constexpr MesaLed MESAS[] = {
+  {1, 25, 26, 27},
+  {2, 32, 33, 14},
+  // {3, 18, 19, 21},
+};
+```
+
+`ATIENDETE_TIENE_MESAS` tiene que ir junto al arreglo. Si falta el macro, el firmware ignora esas filas y usa el default de dos mesas. Para sumar la mesa 3, descomenta `{3, 18, 19, 21}`.
 
 `pio run` compila aunque falte `config.h` (usa el ejemplo y avisa). No flashees ese binario: no va a entrar a tu WiFi. El script `firmware/elegir_config.py` decide cuál de los dos headers entra; hace falta porque el SDK del ESP32 ya trae un `config.h` distinto.
 
@@ -421,19 +460,19 @@ pio run -t upload
 pio device monitor
 ```
 
-El monitor va a 115200. Comandos, también sin red:
+El monitor va a 115200. Comandos, también sin red. Cada tecla pinta todos los LED a la vez:
 
 | Tecla | Efecto |
 | --- | --- |
-| `1` | Fuerza `RECIBIDO` (azul) |
-| `2` | Fuerza `EN_PREPARACION` (ámbar) |
-| `3` | Fuerza `LISTO` (verde, parpadea y queda fijo) |
-| `4` | Fuerza `ENTREGADO` (apagado) |
-| `0` | Vuelve al modo red |
+| `1` | Fuerza `RECIBIDO` (azul) en todos los LED |
+| `2` | Fuerza `EN_PREPARACION` (ámbar) en todos los LED |
+| `3` | Fuerza `LISTO` (verde, parpadea y queda fijo) en todos los LED |
+| `4` | Fuerza `ENTREGADO` (apagado) en todos los LED |
+| `0` | Vuelve al modo red (cada LED con el estado de su mesa) |
 
-Un mensaje MQTT de estado cancela el modo prueba. La reconexión de WiFi y de MQTT no usa `delay()`, así el LED y el monitor siguen respondiendo. Al conectar, la placa publica `online` (retenido) y se suscribe a `atiendete/mesa/{numero}/estado`.
+Un mensaje MQTT de estado cancela el modo prueba. La reconexión de WiFi y de MQTT no usa `delay()`, así los LED y el monitor siguen respondiendo. Al conectar, la placa publica `online` (retenido) en `atiendete/mesa/{numero}/conexion` de cada mesa del arreglo y se suscribe a `atiendete/mesa/{numero}/estado` de cada una. Cada LED cambia solo cuando llega el estado de su mesa. Sin WiFi parpadean todos en rojo. Si una mesa todavía no tiene sesión MQTT, parpadea en rojo solo ese LED.
 
-PubSubClient solo publica en QoS 0. El `online` igual va retenido. El Last Will `offline` va en QoS 1 y retenido, que es lo que la librería permite en el testamento.
+PubSubClient solo publica en QoS 0. El `online` igual va retenido. El Last Will `offline` va en QoS 1 y retenido, que es lo que la librería permite en el testamento. Hay una sesión por mesa porque la librería solo admite un testamento por conexión; así cada mesa tiene el suyo y el backend las ve online por separado.
 
 ## Pruebas automáticas
 

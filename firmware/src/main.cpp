@@ -1,15 +1,22 @@
-// AtiendeTe: el LED de la mesa copia el estado que publica el backend por MQTT.
+// AtiendeTe: una ESP32 y un LED RGB por mesa. Cada LED copia el estado que
+// el backend publica por MQTT para esa mesa.
 //
 //   RECIBIDO        azul fijo
 //   EN_PREPARACION  ámbar fijo
 //   LISTO           verde, parpadea unos segundos y queda fijo
 //   ENTREGADO       apagado
 //   sin pedido      apagado
-//   sin WiFi o MQTT rojo lento
+//   sin WiFi          rojo lento, en todos los LED
+//   sin MQTT de una  rojo lento, solo en ese LED
 //
-// Por el monitor serie (115200) se puede forzar un color sin red:
+// Por el monitor serie (115200) se puede forzar un color sin red.
+// El comando pinta todos los LED a la vez:
 //   1 RECIBIDO, 2 EN_PREPARACION, 3 LISTO, 4 ENTREGADO, 0 volver al modo red.
 // No usamos delay(): el parpadeo y la reconexión tienen que convivir.
+//
+// Cada mesa abre su propia sesión MQTT. PubSubClient solo admite un Last Will
+// por conexión; así atiendete/mesa/N/conexion de cada una recibe offline si
+// la placa se cae, y online cuando conecta. El backend ve todas las mesas.
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -31,13 +38,34 @@
 #define LED_ANODO_COMUN true
 #endif
 
-static const uint8_t PIN_ROJO = 25;
-static const uint8_t PIN_VERDE = 26;
-static const uint8_t PIN_AZUL = 27;
+// config.example.h lo trae como constexpr. elegir_config.py define
+// ATIENDETE_BRILLO_YA_DECLARADO en ese caso para no pisar el valor con un macro.
+// Si no está de ninguna forma, el tope es 40.
+#ifndef ATIENDETE_BRILLO_YA_DECLARADO
+#ifndef BRILLO_MAX
+#define BRILLO_MAX 40
+#endif
+#endif
 
-static const uint8_t CANAL_ROJO = 0;
-static const uint8_t CANAL_VERDE = 1;
-static const uint8_t CANAL_AZUL = 2;
+// config.h viejo (solo WiFi, broker y a veces MESA_ID o pines sueltos) no trae
+// el arreglo. Estas dos filas son el cableado por defecto.
+#ifndef ATIENDETE_TIENE_MESAS
+struct MesaLed {
+  uint8_t numero;
+  uint8_t rojo;
+  uint8_t verde;
+  uint8_t azul;
+};
+
+static constexpr MesaLed MESAS[] = {
+  {1, 25, 26, 27},
+  {2, 32, 33, 14},
+};
+#endif
+
+static constexpr size_t CANTIDAD_MESAS = sizeof(MESAS) / sizeof(MESAS[0]);
+static_assert(CANTIDAD_MESAS >= 1, "Configura al menos una mesa en MESAS");
+static_assert(CANTIDAD_MESAS * 3 <= 16, "Cada mesa usa 3 canales LEDC; el ESP32 tiene 16");
 
 // LEDC a 8 bits. El duty va de 0 a BRILLO_MAX_RANGE. El tope de brillo percibido
 // sigue siendo BRILLO_MAX, que es más bajo a propósito.
@@ -47,6 +75,9 @@ static const unsigned long REINTENTO_MS = 3000;
 static const unsigned long LISTO_PARPADEO_MS = 6000;
 static const unsigned long LISTO_INTERVALO_MS = 300;
 static const unsigned long ROJO_INTERVALO_MS = 800;
+// connect() bloquea. El default de la librería son 15 s por sesión; con varias
+// mesas el parpadeo se congelaría.
+static const uint16_t MQTT_TIMEOUT_S = 3;
 
 enum class EstadoPedido : uint8_t {
   Ninguno = 0,
@@ -56,23 +87,32 @@ enum class EstadoPedido : uint8_t {
   Entregado = 4,
 };
 
-WiFiClient red;
-PubSubClient mqtt(red);
+struct CanalesPwm {
+  uint8_t rojo;
+  uint8_t verde;
+  uint8_t azul;
+};
 
-char topicoEstado[48];
-char topicoConexion[48];
-char clienteId[32];
+struct MesaRuntime {
+  EstadoPedido estado;
+  bool listoParpadeando;
+  unsigned long listoDesde;
+  bool mqttAnunciado;
+  unsigned long ultimoIntentoMqtt;
+};
 
-EstadoPedido estadoRed = EstadoPedido::Ninguno;
+WiFiClient redes[CANTIDAD_MESAS];
+PubSubClient clientes[CANTIDAD_MESAS];
+CanalesPwm canales[CANTIDAD_MESAS];
+MesaRuntime runtimeMesa[CANTIDAD_MESAS];
+
 EstadoPedido estadoForzado = EstadoPedido::Ninguno;
 bool modoPrueba = false;
-bool listoParpadeando = false;
-unsigned long listoDesde = 0;
+bool pruebaParpadeando = false;
+unsigned long pruebaDesde = 0;
 
 unsigned long ultimoIntentoWifi = 0;
-unsigned long ultimoIntentoMqtt = 0;
 bool wifiAnunciado = false;
-bool mqttAnunciado = false;
 
 int brilloTope() {
   if (BRILLO_MAX < 1) return 1;
@@ -81,24 +121,33 @@ int brilloTope() {
 }
 
 void iniciarPwm() {
+  uint8_t canal = 0;
+  for (size_t i = 0; i < CANTIDAD_MESAS; i++) {
+    canales[i].rojo = canal++;
+    canales[i].verde = canal++;
+    canales[i].azul = canal++;
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcAttach(PIN_ROJO, 5000, 8);
-  ledcAttach(PIN_VERDE, 5000, 8);
-  ledcAttach(PIN_AZUL, 5000, 8);
+    // Un canal distinto por pata. ledcAttachChannel lo fija; ledcWrite va por pin.
+    ledcAttachChannel(MESAS[i].rojo, 5000, 8, canales[i].rojo);
+    ledcAttachChannel(MESAS[i].verde, 5000, 8, canales[i].verde);
+    ledcAttachChannel(MESAS[i].azul, 5000, 8, canales[i].azul);
 #else
-  ledcSetup(CANAL_ROJO, 5000, 8);
-  ledcAttachPin(PIN_ROJO, CANAL_ROJO);
-  ledcSetup(CANAL_VERDE, 5000, 8);
-  ledcAttachPin(PIN_VERDE, CANAL_VERDE);
-  ledcSetup(CANAL_AZUL, 5000, 8);
-  ledcAttachPin(PIN_AZUL, CANAL_AZUL);
+    ledcSetup(canales[i].rojo, 5000, 8);
+    ledcAttachPin(MESAS[i].rojo, canales[i].rojo);
+    ledcSetup(canales[i].verde, 5000, 8);
+    ledcAttachPin(MESAS[i].verde, canales[i].verde);
+    ledcSetup(canales[i].azul, 5000, 8);
+    ledcAttachPin(MESAS[i].azul, canales[i].azul);
 #endif
+  }
 }
 
 void escribirPwm(uint8_t pin, uint8_t canal, uint8_t valor) {
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
+  (void)canal;
   ledcWrite(pin, valor);
 #else
+  (void)pin;
   ledcWrite(canal, valor);
 #endif
 }
@@ -112,7 +161,7 @@ uint8_t deber(uint8_t valor) {
   return valor;
 }
 
-void color(uint8_t rojo, uint8_t verde, uint8_t azul) {
+void colorMesa(size_t indice, uint8_t rojo, uint8_t verde, uint8_t azul) {
   const uint8_t mayor = max(rojo, max(verde, azul));
   const int tope = brilloTope();
   uint8_t r = 0;
@@ -123,15 +172,19 @@ void color(uint8_t rojo, uint8_t verde, uint8_t azul) {
     g = static_cast<uint8_t>(static_cast<uint16_t>(verde) * tope / mayor);
     b = static_cast<uint8_t>(static_cast<uint16_t>(azul) * tope / mayor);
   }
-  escribirPwm(PIN_ROJO, CANAL_ROJO, deber(r));
-  escribirPwm(PIN_VERDE, CANAL_VERDE, deber(g));
-  escribirPwm(PIN_AZUL, CANAL_AZUL, deber(b));
+  escribirPwm(MESAS[indice].rojo, canales[indice].rojo, deber(r));
+  escribirPwm(MESAS[indice].verde, canales[indice].verde, deber(g));
+  escribirPwm(MESAS[indice].azul, canales[indice].azul, deber(b));
 }
 
-void apagar() {
+void apagarMesa(size_t indice) {
   // ENTREGADO, la tecla 4 y las fases apagadas del parpadeo.
   // Con ánodo común los tres canales quedan en BRILLO_MAX_RANGE (duty completo).
-  color(0, 0, 0);
+  colorMesa(indice, 0, 0, 0);
+}
+
+void apagarTodas() {
+  for (size_t i = 0; i < CANTIDAD_MESAS; i++) apagarMesa(i);
 }
 
 const char* nombreEstado(EstadoPedido estado) {
@@ -169,20 +222,38 @@ bool interpretarEstado(const char* texto, EstadoPedido& destino) {
   return false;
 }
 
-void empezarListo() {
-  listoParpadeando = true;
-  listoDesde = millis();
+int numeroEnTopico(const char* topico) {
+  const char prefijo[] = "atiendete/mesa/";
+  const size_t largoPrefijo = sizeof(prefijo) - 1;
+  if (strncmp(topico, prefijo, largoPrefijo) != 0) return -1;
+  const char* cursor = topico + largoPrefijo;
+  if (*cursor < '0' || *cursor > '9') return -1;
+  int numero = 0;
+  int digitos = 0;
+  while (*cursor >= '0' && *cursor <= '9') {
+    if (digitos >= 4) return -1;
+    numero = numero * 10 + (*cursor - '0');
+    cursor++;
+    digitos++;
+  }
+  if (strcmp(cursor, "/estado") != 0) return -1;
+  return numero;
 }
 
-void aplicarEstado(EstadoPedido estado, bool reiniciarListo) {
-  if (reiniciarListo && estado == EstadoPedido::Listo) {
-    empezarListo();
-  } else if (estado != EstadoPedido::Listo) {
-    listoParpadeando = false;
+int indiceMesa(int numero) {
+  for (size_t i = 0; i < CANTIDAD_MESAS; i++) {
+    if (MESAS[i].numero == numero) return static_cast<int>(i);
   }
+  return -1;
 }
 
 void alMensaje(char* topico, byte* carga, unsigned int largo) {
+  const int numero = numeroEnTopico(topico);
+  const int indice = numero >= 0 ? indiceMesa(numero) : -1;
+  if (indice < 0) {
+    Serial.printf("MQTT: tópico ignorado %s\n", topico);
+    return;
+  }
   JsonDocument doc;
   const DeserializationError error = deserializeJson(doc, carga, largo);
   if (error) {
@@ -195,11 +266,17 @@ void alMensaje(char* topico, byte* carga, unsigned int largo) {
     Serial.printf("MQTT: estado desconocido en %s\n", topico);
     return;
   }
-  const bool cambio = nuevo != estadoRed;
-  estadoRed = nuevo;
+  MesaRuntime& mesa = runtimeMesa[indice];
+  mesa.estado = nuevo;
+  // Cada LISTO, aunque repita el mismo estado, vuelve a parpadear.
+  if (nuevo == EstadoPedido::Listo) {
+    mesa.listoParpadeando = true;
+    mesa.listoDesde = millis();
+  } else {
+    mesa.listoParpadeando = false;
+  }
   modoPrueba = false;
-  aplicarEstado(nuevo, cambio || nuevo == EstadoPedido::Listo);
-  Serial.printf("MQTT mesa %d -> %s\n", MESA_NUMERO, nombreEstado(nuevo));
+  Serial.printf("MQTT mesa %d -> %s\n", MESAS[indice].numero, nombreEstado(nuevo));
 }
 
 void mantenerWifi() {
@@ -212,7 +289,7 @@ void mantenerWifi() {
     return;
   }
   wifiAnunciado = false;
-  mqttAnunciado = false;
+  for (size_t i = 0; i < CANTIDAD_MESAS; i++) runtimeMesa[i].mqttAnunciado = false;
   const unsigned long ahora = millis();
   if (ahora - ultimoIntentoWifi < REINTENTO_MS) return;
   ultimoIntentoWifi = ahora;
@@ -221,31 +298,44 @@ void mantenerWifi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 
+void conectarMesa(size_t indice) {
+  char clienteId[32];
+  char topicoConexion[48];
+  char topicoEstado[48];
+  const int numero = MESAS[indice].numero;
+  snprintf(clienteId, sizeof(clienteId), "atiendete-mesa-%d", numero);
+  snprintf(topicoConexion, sizeof(topicoConexion), "atiendete/mesa/%d/conexion", numero);
+  snprintf(topicoEstado, sizeof(topicoEstado), "atiendete/mesa/%d/estado", numero);
+
+  // Last Will retenido de esta mesa. Las otras sesiones tienen el suyo.
+  const bool ok = clientes[indice].connect(clienteId, topicoConexion, 1, true, "offline");
+  if (!ok) {
+    Serial.printf("MQTT mesa %d falló, rc=%d\n", numero, clientes[indice].state());
+    return;
+  }
+  clientes[indice].publish(topicoConexion, "online", true);
+  clientes[indice].subscribe(topicoEstado);
+  runtimeMesa[indice].mqttAnunciado = true;
+  Serial.printf("MQTT OK, mesa %d\n", numero);
+}
+
 void mantenerMqtt() {
   if (WiFi.status() != WL_CONNECTED) return;
-  if (mqtt.connected()) {
-    mqtt.loop();
-    if (!mqttAnunciado) {
-      mqttAnunciado = true;
-      Serial.printf("MQTT OK, mesa %d\n", MESA_NUMERO);
+  for (size_t i = 0; i < CANTIDAD_MESAS; i++) {
+    if (clientes[i].connected()) {
+      clientes[i].loop();
+      if (!runtimeMesa[i].mqttAnunciado) {
+        runtimeMesa[i].mqttAnunciado = true;
+        Serial.printf("MQTT OK, mesa %d\n", MESAS[i].numero);
+      }
+      continue;
     }
-    return;
+    runtimeMesa[i].mqttAnunciado = false;
+    const unsigned long ahora = millis();
+    if (ahora - runtimeMesa[i].ultimoIntentoMqtt < REINTENTO_MS) continue;
+    runtimeMesa[i].ultimoIntentoMqtt = ahora;
+    conectarMesa(i);
   }
-  mqttAnunciado = false;
-  const unsigned long ahora = millis();
-  if (ahora - ultimoIntentoMqtt < REINTENTO_MS) return;
-  ultimoIntentoMqtt = ahora;
-
-  // Last Will retenido: si la placa se cae, el broker avisa "offline" al backend.
-  const bool ok = mqtt.connect(clienteId, topicoConexion, 1, true, "offline");
-  if (!ok) {
-    Serial.printf("MQTT falló, rc=%d\n", mqtt.state());
-    return;
-  }
-  mqtt.publish(topicoConexion, "online", true);
-  mqtt.subscribe(topicoEstado);
-  mqttAnunciado = true;
-  Serial.printf("MQTT OK, mesa %d\n", MESA_NUMERO);
 }
 
 void leerSerial() {
@@ -260,68 +350,92 @@ void leerSerial() {
     if (caracter < '1' || caracter > '4') continue;
     modoPrueba = true;
     estadoForzado = static_cast<EstadoPedido>(caracter - '0');
-    aplicarEstado(estadoForzado, true);
-    Serial.printf("Prueba: %s\n", nombreEstado(estadoForzado));
+    if (estadoForzado == EstadoPedido::Listo) {
+      pruebaParpadeando = true;
+      pruebaDesde = millis();
+    } else {
+      pruebaParpadeando = false;
+    }
+    Serial.printf("Prueba (todas las mesas): %s\n", nombreEstado(estadoForzado));
   }
 }
 
-void mostrarListo() {
-  if (listoParpadeando && millis() - listoDesde < LISTO_PARPADEO_MS) {
-    const bool encendido = ((millis() - listoDesde) / LISTO_INTERVALO_MS) % 2 == 0;
-    if (encendido) color(0, 255, 0);
-    else apagar();
-    return;
+void pintarMesa(size_t indice, EstadoPedido estado, bool& parpadeando, unsigned long desde) {
+  switch (estado) {
+    case EstadoPedido::Recibido:
+      colorMesa(indice, 0, 0, 255);
+      break;
+    case EstadoPedido::EnPreparacion:
+      colorMesa(indice, 255, 140, 0);
+      break;
+    case EstadoPedido::Listo:
+      if (parpadeando && millis() - desde < LISTO_PARPADEO_MS) {
+        const bool encendido = ((millis() - desde) / LISTO_INTERVALO_MS) % 2 == 0;
+        if (encendido) colorMesa(indice, 0, 255, 0);
+        else apagarMesa(indice);
+        return;
+      }
+      parpadeando = false;
+      colorMesa(indice, 0, 255, 0);
+      break;
+    case EstadoPedido::Entregado:
+    case EstadoPedido::Ninguno:
+      apagarMesa(indice);
+      break;
   }
-  listoParpadeando = false;
-  color(0, 255, 0);
 }
 
 void mostrarDesconectado() {
   const bool encendido = (millis() / ROJO_INTERVALO_MS) % 2 == 0;
-  if (encendido) color(255, 0, 0);
-  else apagar();
-}
-
-void pintar(EstadoPedido estado) {
-  switch (estado) {
-    case EstadoPedido::Recibido:
-      color(0, 0, 255);
-      break;
-    case EstadoPedido::EnPreparacion:
-      color(255, 140, 0);
-      break;
-    case EstadoPedido::Listo:
-      mostrarListo();
-      break;
-    case EstadoPedido::Entregado:
-    case EstadoPedido::Ninguno:
-      apagar();
-      break;
+  for (size_t i = 0; i < CANTIDAD_MESAS; i++) {
+    if (encendido) colorMesa(i, 255, 0, 0);
+    else apagarMesa(i);
   }
 }
 
-void actualizarLed() {
-  // El modo prueba gana aunque no haya red: sirve para ver el LED en la mesa de trabajo.
+void pintarRojoLento(size_t indice) {
+  const bool encendido = (millis() / ROJO_INTERVALO_MS) % 2 == 0;
+  if (encendido) colorMesa(indice, 255, 0, 0);
+  else apagarMesa(indice);
+}
+
+void actualizarLeds() {
+  // El modo prueba gana aunque no haya red: sirve para ver los LED en la mesa de trabajo.
+  // Pinta todos igual, incluidos el parpadeo verde y el apagado.
   if (modoPrueba) {
-    pintar(estadoForzado);
+    for (size_t i = 0; i < CANTIDAD_MESAS; i++) {
+      pintarMesa(i, estadoForzado, pruebaParpadeando, pruebaDesde);
+    }
     return;
   }
-  const bool enlace = WiFi.status() == WL_CONNECTED && mqtt.connected();
-  if (!enlace) {
+  // Sin WiFi no hay ninguna sesión: rojo en todos. Con WiFi, cada mesa sigue
+  // su estado; la que todavía no conectó al broker parpadea sola en rojo.
+  if (WiFi.status() != WL_CONNECTED) {
     mostrarDesconectado();
     return;
   }
-  pintar(estadoRed);
+  for (size_t i = 0; i < CANTIDAD_MESAS; i++) {
+    if (!clientes[i].connected()) {
+      pintarRojoLento(i);
+      continue;
+    }
+    pintarMesa(i, runtimeMesa[i].estado, runtimeMesa[i].listoParpadeando, runtimeMesa[i].listoDesde);
+  }
 }
 
 void setup() {
   Serial.begin(115200);
   iniciarPwm();
-  apagar();
+  apagarTodas();
 
-  snprintf(topicoEstado, sizeof(topicoEstado), "atiendete/mesa/%d/estado", MESA_NUMERO);
-  snprintf(topicoConexion, sizeof(topicoConexion), "atiendete/mesa/%d/conexion", MESA_NUMERO);
-  snprintf(clienteId, sizeof(clienteId), "atiendete-mesa-%d", MESA_NUMERO);
+  for (size_t i = 0; i < CANTIDAD_MESAS; i++) {
+    clientes[i].setClient(redes[i]);
+    clientes[i].setServer(MQTT_BROKER, MQTT_PORT);
+    clientes[i].setCallback(alMensaje);
+    clientes[i].setBufferSize(256);
+    clientes[i].setKeepAlive(30);
+    clientes[i].setSocketTimeout(MQTT_TIMEOUT_S);
+  }
 
   WiFi.mode(WIFI_STA);
   WiFi.persistent(false);
@@ -330,19 +444,23 @@ void setup() {
   WiFi.setSleep(WIFI_PS_NONE);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-  mqtt.setServer(MQTT_BROKER, MQTT_PORT);
-  mqtt.setCallback(alMensaje);
-  mqtt.setBufferSize(256);
-  mqtt.setKeepAlive(30);
   // setup() ya llamó a WiFi.begin. El siguiente intento espera REINTENTO_MS.
   ultimoIntentoWifi = millis();
 
   Serial.println("AtiendeTe listo. Comandos: 1 recibido, 2 preparacion, 3 listo, 4 entregado, 0 red.");
+  for (size_t i = 0; i < CANTIDAD_MESAS; i++) {
+    Serial.printf(
+        "Mesa %d  R=%u G=%u B=%u\n",
+        MESAS[i].numero,
+        MESAS[i].rojo,
+        MESAS[i].verde,
+        MESAS[i].azul);
+  }
 }
 
 void loop() {
   leerSerial();
   mantenerWifi();
   mantenerMqtt();
-  actualizarLed();
+  actualizarLeds();
 }
