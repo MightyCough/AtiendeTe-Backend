@@ -5,6 +5,7 @@ import { esEstadoPedido, transicionPermitida, type EstadoPedido } from '../domin
 import type { Idioma } from '../dominio/idiomas.js'
 import { ErrorHttp } from '../errores.js'
 import { publicarEstadoMesa } from '../mqtt.js'
+import { anunciarEstadoMesa } from './mesas.js'
 import { cargarPedido, includePedido, pedidoADto } from './pedido-dto.js'
 
 export type ItemEntrada = {
@@ -100,7 +101,7 @@ export async function crearPedido(ctx: Contexto, entrada: PedidoEntrada): Promis
   }))
   const total = calcularTotal(calculo)
 
-  const pedidoId = await ctx.prisma.$transaction(async (tx) => {
+  const { pedidoId, mesaOcupada } = await ctx.prisma.$transaction(async (tx) => {
     const creado = await tx.pedido.create({
       data: {
         mesaId: mesa.id,
@@ -129,7 +130,12 @@ export async function crearPedido(ctx: Contexto, entrada: PedidoEntrada): Promis
       },
       select: { id: true },
     })
-    return creado.id
+    // Un pedido nuevo ocupa la mesa, también si estaba reservada.
+    const ocupada = await tx.mesa.updateMany({
+      where: { id: mesa.id, estado: { not: 'OCUPADA' } },
+      data: { estado: 'OCUPADA' },
+    })
+    return { pedidoId: creado.id, mesaOcupada: ocupada.count > 0 }
   })
 
   const completo = await cargarPedido(ctx.prisma, pedidoId)
@@ -140,6 +146,7 @@ export async function crearPedido(ctx: Contexto, entrada: PedidoEntrada): Promis
 
   ctx.io.emit('pedido:nuevo', paraCocina)
   publicarEstadoMesa(ctx.mqtt, mesa.numero, completo.id, 'RECIBIDO')
+  if (mesaOcupada) anunciarEstadoMesa(ctx, mesa.numero, 'OCUPADA')
   ctx.log.info({ id: completo.id, mesa: mesa.numero, total }, 'Pedido creado')
 
   return paraCliente

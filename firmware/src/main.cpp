@@ -1,17 +1,17 @@
-// AtiendeTe: una ESP32 y un LED RGB por mesa. Cada LED copia el estado que
-// el backend publica por MQTT para esa mesa.
+// AtiendeTe: una ESP32 y un LED RGB por mesa. Cada LED muestra al cliente que
+// llega al local si su mesa está libre, ocupada o reservada. El backend publica
+// ese estado por MQTT; lo cambia la caja o el administrador.
 //
-//   RECIBIDO        azul fijo
-//   EN_PREPARACION  ámbar fijo
-//   LISTO           verde, parpadea unos segundos y queda fijo
-//   ENTREGADO       apagado
-//   sin pedido      apagado
-//   sin WiFi          rojo lento, en todos los LED
-//   sin MQTT de una  rojo lento, solo en ese LED
+//   LIBRE           verde fijo
+//   OCUPADA         rojo fijo
+//   RESERVADA       ámbar fijo
+//   sin dato aún    apagado
+//   sin WiFi          blanco lento, en todos los LED
+//   sin MQTT de una  blanco lento, solo en ese LED
 //
 // Por el monitor serie (115200) se puede forzar un color sin red.
 // El comando pinta todos los LED a la vez:
-//   1 RECIBIDO, 2 EN_PREPARACION, 3 LISTO, 4 ENTREGADO, 0 volver al modo red.
+//   1 LIBRE, 2 OCUPADA, 3 RESERVADA, 0 volver al modo red.
 // No usamos delay(): el parpadeo y la reconexión tienen que convivir.
 //
 // Cada mesa abre su propia sesión MQTT. PubSubClient solo admite un Last Will
@@ -72,19 +72,16 @@ static_assert(CANTIDAD_MESAS * 3 <= 16, "Cada mesa usa 3 canales LEDC; el ESP32 
 static const uint8_t BRILLO_MAX_RANGE = 255;
 
 static const unsigned long REINTENTO_MS = 3000;
-static const unsigned long LISTO_PARPADEO_MS = 6000;
-static const unsigned long LISTO_INTERVALO_MS = 300;
-static const unsigned long ROJO_INTERVALO_MS = 800;
+static const unsigned long FALLA_INTERVALO_MS = 800;
 // connect() bloquea. El default de la librería son 15 s por sesión; con varias
 // mesas el parpadeo se congelaría.
 static const uint16_t MQTT_TIMEOUT_S = 3;
 
-enum class EstadoPedido : uint8_t {
+enum class EstadoMesa : uint8_t {
   Ninguno = 0,
-  Recibido = 1,
-  EnPreparacion = 2,
-  Listo = 3,
-  Entregado = 4,
+  Libre = 1,
+  Ocupada = 2,
+  Reservada = 3,
 };
 
 struct CanalesPwm {
@@ -94,9 +91,7 @@ struct CanalesPwm {
 };
 
 struct MesaRuntime {
-  EstadoPedido estado;
-  bool listoParpadeando;
-  unsigned long listoDesde;
+  EstadoMesa estado;
   bool mqttAnunciado;
   unsigned long ultimoIntentoMqtt;
 };
@@ -106,10 +101,8 @@ PubSubClient clientes[CANTIDAD_MESAS];
 CanalesPwm canales[CANTIDAD_MESAS];
 MesaRuntime runtimeMesa[CANTIDAD_MESAS];
 
-EstadoPedido estadoForzado = EstadoPedido::Ninguno;
+EstadoMesa estadoForzado = EstadoMesa::Ninguno;
 bool modoPrueba = false;
-bool pruebaParpadeando = false;
-unsigned long pruebaDesde = 0;
 
 unsigned long ultimoIntentoWifi = 0;
 bool wifiAnunciado = false;
@@ -178,7 +171,7 @@ void colorMesa(size_t indice, uint8_t rojo, uint8_t verde, uint8_t azul) {
 }
 
 void apagarMesa(size_t indice) {
-  // ENTREGADO, la tecla 4 y las fases apagadas del parpadeo.
+  // Mesa sin dato y las fases apagadas del parpadeo de falla.
   // Con ánodo común los tres canales quedan en BRILLO_MAX_RANGE (duty completo).
   colorMesa(indice, 0, 0, 0);
 }
@@ -187,36 +180,30 @@ void apagarTodas() {
   for (size_t i = 0; i < CANTIDAD_MESAS; i++) apagarMesa(i);
 }
 
-const char* nombreEstado(EstadoPedido estado) {
+const char* nombreEstado(EstadoMesa estado) {
   switch (estado) {
-    case EstadoPedido::Recibido:
-      return "RECIBIDO";
-    case EstadoPedido::EnPreparacion:
-      return "EN_PREPARACION";
-    case EstadoPedido::Listo:
-      return "LISTO";
-    case EstadoPedido::Entregado:
-      return "ENTREGADO";
+    case EstadoMesa::Libre:
+      return "LIBRE";
+    case EstadoMesa::Ocupada:
+      return "OCUPADA";
+    case EstadoMesa::Reservada:
+      return "RESERVADA";
     default:
       return "NINGUNO";
   }
 }
 
-bool interpretarEstado(const char* texto, EstadoPedido& destino) {
-  if (strcmp(texto, "RECIBIDO") == 0) {
-    destino = EstadoPedido::Recibido;
+bool interpretarEstado(const char* texto, EstadoMesa& destino) {
+  if (strcmp(texto, "LIBRE") == 0) {
+    destino = EstadoMesa::Libre;
     return true;
   }
-  if (strcmp(texto, "EN_PREPARACION") == 0) {
-    destino = EstadoPedido::EnPreparacion;
+  if (strcmp(texto, "OCUPADA") == 0) {
+    destino = EstadoMesa::Ocupada;
     return true;
   }
-  if (strcmp(texto, "LISTO") == 0) {
-    destino = EstadoPedido::Listo;
-    return true;
-  }
-  if (strcmp(texto, "ENTREGADO") == 0) {
-    destino = EstadoPedido::Entregado;
+  if (strcmp(texto, "RESERVADA") == 0) {
+    destino = EstadoMesa::Reservada;
     return true;
   }
   return false;
@@ -236,7 +223,7 @@ int numeroEnTopico(const char* topico) {
     cursor++;
     digitos++;
   }
-  if (strcmp(cursor, "/estado") != 0) return -1;
+  if (strcmp(cursor, "/ocupacion") != 0) return -1;
   return numero;
 }
 
@@ -261,20 +248,12 @@ void alMensaje(char* topico, byte* carga, unsigned int largo) {
     return;
   }
   const char* texto = doc["estado"] | "";
-  EstadoPedido nuevo;
+  EstadoMesa nuevo;
   if (!interpretarEstado(texto, nuevo)) {
     Serial.printf("MQTT: estado desconocido en %s\n", topico);
     return;
   }
-  MesaRuntime& mesa = runtimeMesa[indice];
-  mesa.estado = nuevo;
-  // Cada LISTO, aunque repita el mismo estado, vuelve a parpadear.
-  if (nuevo == EstadoPedido::Listo) {
-    mesa.listoParpadeando = true;
-    mesa.listoDesde = millis();
-  } else {
-    mesa.listoParpadeando = false;
-  }
+  runtimeMesa[indice].estado = nuevo;
   modoPrueba = false;
   Serial.printf("MQTT mesa %d -> %s\n", MESAS[indice].numero, nombreEstado(nuevo));
 }
@@ -301,11 +280,11 @@ void mantenerWifi() {
 void conectarMesa(size_t indice) {
   char clienteId[32];
   char topicoConexion[48];
-  char topicoEstado[48];
+  char topicoOcupacion[48];
   const int numero = MESAS[indice].numero;
   snprintf(clienteId, sizeof(clienteId), "atiendete-mesa-%d", numero);
   snprintf(topicoConexion, sizeof(topicoConexion), "atiendete/mesa/%d/conexion", numero);
-  snprintf(topicoEstado, sizeof(topicoEstado), "atiendete/mesa/%d/estado", numero);
+  snprintf(topicoOcupacion, sizeof(topicoOcupacion), "atiendete/mesa/%d/ocupacion", numero);
 
   // Last Will retenido de esta mesa. Las otras sesiones tienen el suyo.
   const bool ok = clientes[indice].connect(clienteId, topicoConexion, 1, true, "offline");
@@ -314,7 +293,7 @@ void conectarMesa(size_t indice) {
     return;
   }
   clientes[indice].publish(topicoConexion, "online", true);
-  clientes[indice].subscribe(topicoEstado);
+  clientes[indice].subscribe(topicoOcupacion);
   runtimeMesa[indice].mqttAnunciado = true;
   Serial.printf("MQTT OK, mesa %d\n", numero);
 }
@@ -347,79 +326,60 @@ void leerSerial() {
       Serial.println("Modo red");
       continue;
     }
-    if (caracter < '1' || caracter > '4') continue;
+    if (caracter < '1' || caracter > '3') continue;
     modoPrueba = true;
-    estadoForzado = static_cast<EstadoPedido>(caracter - '0');
-    if (estadoForzado == EstadoPedido::Listo) {
-      pruebaParpadeando = true;
-      pruebaDesde = millis();
-    } else {
-      pruebaParpadeando = false;
-    }
+    estadoForzado = static_cast<EstadoMesa>(caracter - '0');
     Serial.printf("Prueba (todas las mesas): %s\n", nombreEstado(estadoForzado));
   }
 }
 
-void pintarMesa(size_t indice, EstadoPedido estado, bool& parpadeando, unsigned long desde) {
+void pintarMesa(size_t indice, EstadoMesa estado) {
   switch (estado) {
-    case EstadoPedido::Recibido:
-      colorMesa(indice, 0, 0, 255);
-      break;
-    case EstadoPedido::EnPreparacion:
-      colorMesa(indice, 255, 140, 0);
-      break;
-    case EstadoPedido::Listo:
-      if (parpadeando && millis() - desde < LISTO_PARPADEO_MS) {
-        const bool encendido = ((millis() - desde) / LISTO_INTERVALO_MS) % 2 == 0;
-        if (encendido) colorMesa(indice, 0, 255, 0);
-        else apagarMesa(indice);
-        return;
-      }
-      parpadeando = false;
+    case EstadoMesa::Libre:
       colorMesa(indice, 0, 255, 0);
       break;
-    case EstadoPedido::Entregado:
-    case EstadoPedido::Ninguno:
+    case EstadoMesa::Ocupada:
+      colorMesa(indice, 255, 0, 0);
+      break;
+    case EstadoMesa::Reservada:
+      colorMesa(indice, 255, 140, 0);
+      break;
+    case EstadoMesa::Ninguno:
       apagarMesa(indice);
       break;
   }
 }
 
-void mostrarDesconectado() {
-  const bool encendido = (millis() / ROJO_INTERVALO_MS) % 2 == 0;
-  for (size_t i = 0; i < CANTIDAD_MESAS; i++) {
-    if (encendido) colorMesa(i, 255, 0, 0);
-    else apagarMesa(i);
-  }
+// Blanco y no rojo: el rojo fijo ya significa mesa ocupada.
+void pintarFallaLenta(size_t indice) {
+  const bool encendido = (millis() / FALLA_INTERVALO_MS) % 2 == 0;
+  if (encendido) colorMesa(indice, 255, 255, 255);
+  else apagarMesa(indice);
 }
 
-void pintarRojoLento(size_t indice) {
-  const bool encendido = (millis() / ROJO_INTERVALO_MS) % 2 == 0;
-  if (encendido) colorMesa(indice, 255, 0, 0);
-  else apagarMesa(indice);
+void mostrarDesconectado() {
+  for (size_t i = 0; i < CANTIDAD_MESAS; i++) pintarFallaLenta(i);
 }
 
 void actualizarLeds() {
   // El modo prueba gana aunque no haya red: sirve para ver los LED en la mesa de trabajo.
-  // Pinta todos igual, incluidos el parpadeo verde y el apagado.
+  // Pinta todos igual.
   if (modoPrueba) {
-    for (size_t i = 0; i < CANTIDAD_MESAS; i++) {
-      pintarMesa(i, estadoForzado, pruebaParpadeando, pruebaDesde);
-    }
+    for (size_t i = 0; i < CANTIDAD_MESAS; i++) pintarMesa(i, estadoForzado);
     return;
   }
-  // Sin WiFi no hay ninguna sesión: rojo en todos. Con WiFi, cada mesa sigue
-  // su estado; la que todavía no conectó al broker parpadea sola en rojo.
+  // Sin WiFi no hay ninguna sesión: blanco lento en todos. Con WiFi, cada mesa
+  // sigue su estado; la que todavía no conectó al broker parpadea sola en blanco.
   if (WiFi.status() != WL_CONNECTED) {
     mostrarDesconectado();
     return;
   }
   for (size_t i = 0; i < CANTIDAD_MESAS; i++) {
     if (!clientes[i].connected()) {
-      pintarRojoLento(i);
+      pintarFallaLenta(i);
       continue;
     }
-    pintarMesa(i, runtimeMesa[i].estado, runtimeMesa[i].listoParpadeando, runtimeMesa[i].listoDesde);
+    pintarMesa(i, runtimeMesa[i].estado);
   }
 }
 
@@ -447,7 +407,7 @@ void setup() {
   // setup() ya llamó a WiFi.begin. El siguiente intento espera REINTENTO_MS.
   ultimoIntentoWifi = millis();
 
-  Serial.println("AtiendeTe listo. Comandos: 1 recibido, 2 preparacion, 3 listo, 4 entregado, 0 red.");
+  Serial.println("AtiendeTe listo. Comandos: 1 libre, 2 ocupada, 3 reservada, 0 red.");
   for (size_t i = 0; i < CANTIDAD_MESAS; i++) {
     Serial.printf(
         "Mesa %d  R=%u G=%u B=%u\n",

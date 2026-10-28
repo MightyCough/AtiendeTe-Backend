@@ -1,12 +1,21 @@
 import type { PrismaClient } from '@prisma/client'
-import type { MesaDto } from '../contrato.js'
+import type { Contexto } from '../contexto.js'
+import type { MesaDto, MesaEstadoDto } from '../contrato.js'
+import type { EstadoMesa } from '../dominio/estados-mesa.js'
 import { ErrorHttp } from '../errores.js'
+import { publicarOcupacionMesa } from '../mqtt.js'
 
-function aDto(mesa: { numero: number; online: boolean; ultimaConexion: Date | null }): MesaDto {
+function aDto(mesa: {
+  numero: number
+  online: boolean
+  ultimaConexion: Date | null
+  estado: EstadoMesa
+}): MesaDto {
   return {
     numero: mesa.numero,
     online: mesa.online,
     ultimaConexion: mesa.ultimaConexion ? mesa.ultimaConexion.toISOString() : null,
+    estado: mesa.estado,
   }
 }
 
@@ -40,4 +49,25 @@ export async function registrarConexion(
     },
   })
   return aDto(actualizada)
+}
+
+/** Avisa a las pantallas (Socket.IO) y al LED de la mesa (MQTT) del estado actual. */
+export function anunciarEstadoMesa(ctx: Contexto, numero: number, estado: EstadoMesa): MesaEstadoDto {
+  const aviso: MesaEstadoDto = { numero, estado }
+  ctx.io.emit('mesa:estado', aviso)
+  publicarOcupacionMesa(ctx.mqtt, numero, estado)
+  ctx.log.info(aviso, 'Estado de mesa actualizado')
+  return aviso
+}
+
+/** La caja o el administrador fijan el estado de la mesa. Repetir el mismo estado vuelve a avisar al LED. */
+export async function cambiarEstadoMesa(
+  ctx: Contexto,
+  numero: number,
+  estado: EstadoMesa,
+): Promise<MesaEstadoDto> {
+  const mesa = await ctx.prisma.mesa.findUnique({ where: { numero } })
+  if (!mesa) throw new ErrorHttp(404, 'Mesa no encontrada')
+  await ctx.prisma.mesa.update({ where: { numero }, data: { estado } })
+  return anunciarEstadoMesa(ctx, numero, estado)
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { ESTADOS_PEDIDO, esEstadoPedido, transicionPermitida, type EstadoPedido } from '../src/dominio/estados.ts'
+import { ESTADOS_MESA, esEstadoMesa } from '../src/dominio/estados-mesa.ts'
 
 describe('transiciones de estado', () => {
   it('sigue la cadena de la cocina', () => {
@@ -29,5 +30,20 @@ describe('transiciones de estado', () => {
     assert.equal(esEstadoPedido('listo'), false)
     assert.equal(esEstadoPedido('LISTA'), false)
     assert.equal(esEstadoPedido(''), false)
+  })
+})
+
+describe('estados de mesa', () => {
+  it('son libre, ocupada y reservada', () => {
+    assert.deepEqual(ESTADOS_MESA, ['LIBRE', 'OCUPADA', 'RESERVADA'])
+  })
+
+  it('reconoce solo esos tres en mayúsculas', () => {
+    for (const estado of ESTADOS_MESA) {
+      assert.equal(esEstadoMesa(estado), true)
+    }
+    assert.equal(esEstadoMesa('libre'), false)
+    assert.equal(esEstadoMesa('LISTO'), false)
+    assert.equal(esEstadoMesa(''), false)
   })
 })
