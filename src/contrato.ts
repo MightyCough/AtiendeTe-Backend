@@ -2,6 +2,7 @@
 // El README repite este contrato para el frontend, que vive en otro repositorio.
 
 import type { EstadoPedido } from './dominio/estados.js'
+import type { EstadoMesa } from './dominio/estados-mesa.js'
 import type { Idioma } from './dominio/idiomas.js'
 
 export type AdicionalMenu = {
@@ -36,6 +37,12 @@ export type MesaDto = {
   numero: number
   online: boolean
   ultimaConexion: string | null
+  estado: EstadoMesa
+}
+
+export type MesaEstadoDto = {
+  numero: number
+  estado: EstadoMesa
 }
 
 export type ItemPedidoDto = {

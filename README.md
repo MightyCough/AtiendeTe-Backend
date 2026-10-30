@@ -1,6 +1,6 @@
 # AtiendeTe
 
-Pedidos de mesa para el curso de IoT de la Universidad de Huánuco. El cliente lee un QR, arma el pedido en el celular (español o inglés) y la cocina lo ve en una pantalla. Una ESP32 DevKit V1 maneja un LED RGB por mesa y así muestra el estado. Todo corre en la red local: un laptop, un router o el hotspot de un celular. No hace falta nube.
+Pedidos de mesa para el curso de IoT de la Universidad de Huánuco. El cliente lee un QR, arma el pedido en el celular (español o inglés) y la cocina lo ve en una pantalla. Una ESP32 DevKit V1 maneja un LED RGB por mesa y así muestra, a quien entra al local, si la mesa está libre, ocupada o reservada. Todo corre en la red local: un laptop, un router o el hotspot de un celular. No hace falta nube.
 
 Este repositorio es la API, la base de datos y el firmware. El menú web (React, puerto 5173) está en otro repositorio y consume el contrato de más abajo tal cual.
 
@@ -13,17 +13,20 @@ Cocina   -------------- pantalla :5173 --------------+
 
 Estados del pedido, en este orden: `RECIBIDO` → `EN_PREPARACION` → `LISTO` → `ENTREGADO`.
 
-Una placa enciende un LED por mesa. Cada LED sigue solo el estado de la suya. Sin WiFi parpadean todos en rojo. Si el WiFi está y solo falta el MQTT de una mesa, parpadea en rojo ese LED.
+Estado de la mesa: `LIBRE`, `OCUPADA` o `RESERVADA`. Lo cambia la caja o el administrador desde `/admin` (cualquier cambio entre los tres es válido). Un pedido nuevo marca la mesa `OCUPADA` solo, también si estaba reservada. Liberar la mesa es siempre manual: pasar un pedido a `ENTREGADO` no la libera.
 
-| Estado | LED |
+Una placa enciende un LED por mesa. Cada LED sigue solo el estado de la suya. Sin WiFi parpadean todos en blanco. Si el WiFi está y solo falta el MQTT de una mesa, parpadea en blanco ese LED.
+
+| Estado de la mesa | LED |
 | --- | --- |
-| `RECIBIDO` | azul fijo |
-| `EN_PREPARACION` | ámbar fijo |
-| `LISTO` | verde, parpadea unos 6 segundos y queda fijo |
-| `ENTREGADO` | apagado |
-| sin pedido | apagado |
-| sin WiFi | rojo, parpadeo lento, en todos los LED |
-| sin MQTT de esa mesa | rojo, parpadeo lento, solo ese LED |
+| `LIBRE` | verde fijo |
+| `OCUPADA` | rojo fijo |
+| `RESERVADA` | ámbar fijo |
+| sin dato todavía | apagado |
+| sin WiFi | blanco, parpadeo lento, en todos los LED |
+| sin MQTT de esa mesa | blanco, parpadeo lento, solo ese LED |
+
+El LED ya no muestra el estado del pedido. Los estados del pedido siguen en la API, en Socket.IO y en la pantalla de cocina.
 
 ## Requisitos en Nobara / Fedora
 
@@ -177,10 +180,16 @@ Con `lang=en` el mismo producto se llama `Quarter broaster chicken` y el adicion
 `GET /api/mesas` devuelve un arreglo. `GET /api/mesas/1` devuelve un objeto. 404 si el número no existe.
 
 ```json
-{ "numero": 1, "online": false, "ultimaConexion": null }
+{ "numero": 1, "online": false, "ultimaConexion": null, "estado": "LIBRE" }
 ```
 
-`ultimaConexion` es la última vez que el servidor recibió `online` de esa mesa. Un `offline` apaga el flag y no mueve la fecha.
+`ultimaConexion` es la última vez que el servidor recibió `online` de esa mesa. Un `offline` apaga el flag y no mueve la fecha. `online` es si la placa está conectada; `estado` (`LIBRE`, `OCUPADA`, `RESERVADA`) es lo que muestra el LED. No tienen relación.
+
+`PATCH /api/mesas/1/estado` con `{ "estado": "RESERVADA" }`. Acepta cualquiera de los tres, también el que ya tiene (vuelve a avisar al LED). 404 si la mesa no existe, 400 si el estado no es uno de los tres. Respuesta:
+
+```json
+{ "numero": 1, "estado": "RESERVADA" }
+```
 
 ### Pedidos
 
@@ -282,17 +291,21 @@ El cliente se conecta a `http://<ip>:3000` con `socket.io-client` (path por defe
 | `pedido:nuevo` | Pedido completo, **nombres en español** (la misma forma que `GET /api/pedidos`) | Al crear |
 | `pedido:actualizado` | `{ "id": 1, "mesa": 1, "estado": "LISTO" }` | Al cambiar de estado. No trae el pedido entero: la pantalla actualiza el estado o vuelve a pedir la lista. |
 | `mesa:conexion` | `{ "numero": 1, "online": true }` | Cuando llega `online` u `offline` por MQTT. No incluye `ultimaConexion`; eso está en `GET /api/mesas`. |
+| `mesa:estado` | `{ "numero": 1, "estado": "OCUPADA" }` | Cuando cambia el estado de la mesa: por `PATCH /api/mesas/:numero/estado` o porque un pedido nuevo la ocupó. |
 
 ### MQTT
 
 | Tópico | Quién publica | Cuerpo | Retenido |
 | --- | --- | --- | --- |
-| `atiendete/mesa/{numero}/estado` | API, al crear y en cada cambio de estado | `{"pedidoId":1,"estado":"RECIBIDO"}` | sí |
+| `atiendete/mesa/{numero}/ocupacion` | API, cuando cambia el estado de la mesa | `{"estado":"LIBRE"}` (o `OCUPADA`, `RESERVADA`) | sí |
+| `atiendete/mesa/{numero}/estado` | API, al crear y en cada cambio de estado del pedido | `{"pedidoId":1,"estado":"RECIBIDO"}` | sí |
 | `atiendete/mesa/{numero}/conexion` | ESP32 | texto `online` o `offline`, no JSON | sí |
 
 El firmware abre una conexión MQTT por mesa configurada. Cada una publica `online` (retenido) en su tópico de conexión y deja un Last Will `offline` (retenido, QoS 1). Si la placa se apaga, Mosquitto marca offline todas esas mesas, el backend pone `online: false` y emite `mesa:conexion` por cada una.
 
-Cada LED muestra el último estado publicado para su mesa. En la demo conviene un pedido activo por mesa: un pedido nuevo pisa el color del anterior.
+Cada LED muestra el último estado de mesa publicado en `ocupacion`. La placa ya no se suscribe a `estado`: ese tópico lo sigue publicando la API, pero ningún LED lo usa.
+
+Una mesa que nunca recibió un estado de mesa no tiene mensaje retenido y su LED queda apagado hasta el primer cambio. Después de aplicar la migración, fija el estado de cada mesa una vez (por ejemplo `LIBRE`) con el `PATCH` de arriba.
 
 El broker acepta conexiones anónimas en el puerto 1883. Es a propósito, para el laboratorio.
 
@@ -323,7 +336,7 @@ Ingredientes que se pueden quitar: 1 Lechuga, 2 Tomate, 3 Cebolla, 4 Mayonesa, 5
 | 15 | Arroz con leche | 6 | — | — |
 | 16 | Suspiro a la limeña | 8 | — | — |
 
-Mesas sembradas: 1, 2 y 3, desconectadas.
+Mesas sembradas: 1, 2 y 3, desconectadas y `LIBRE`.
 
 El historial de estados (`PedidoEstadoHistorial`) se guarda en la base en cada transición, incluido el `RECIBIDO` inicial. No sale en el JSON.
 
@@ -364,16 +377,25 @@ mosquitto_pub -h localhost -t 'atiendete/mesa/1/conexion' -m 'online' -r
 curl -s http://localhost:3000/api/mesas/1
 ```
 
-La mesa queda `online: true` y la API emite `mesa:conexion`. Crea o avanza un pedido (los `curl` de arriba) y en el sub aparece:
+La mesa queda `online: true` y la API emite `mesa:conexion`. Crea o avanza un pedido (los `curl` de arriba) y en el sub aparece el estado del pedido y, si la mesa no estaba ocupada, el de la mesa:
 
 ```text
 atiendete/mesa/1/estado {"pedidoId":1,"estado":"RECIBIDO"}
+atiendete/mesa/1/ocupacion {"estado":"OCUPADA"}
 ```
 
-Para leer solo el estado retenido y salir:
+Cambia el estado de la mesa como lo haría la caja:
 
 ```bash
-mosquitto_sub -h localhost -t 'atiendete/mesa/1/estado' -v -C 1
+curl -s -X PATCH http://localhost:3000/api/mesas/1/estado \
+  -H 'Content-Type: application/json' \
+  -d '{"estado":"RESERVADA"}'
+```
+
+Para leer solo el estado de mesa retenido y salir:
+
+```bash
+mosquitto_sub -h localhost -t 'atiendete/mesa/1/ocupacion' -v -C 1
 ```
 
 Simula el Last Will (la placa se cayó):
@@ -464,13 +486,12 @@ El monitor va a 115200. Comandos, también sin red. Cada tecla pinta todos los L
 
 | Tecla | Efecto |
 | --- | --- |
-| `1` | Fuerza `RECIBIDO` (azul) en todos los LED |
-| `2` | Fuerza `EN_PREPARACION` (ámbar) en todos los LED |
-| `3` | Fuerza `LISTO` (verde, parpadea y queda fijo) en todos los LED |
-| `4` | Fuerza `ENTREGADO` (apagado) en todos los LED |
+| `1` | Fuerza `LIBRE` (verde) en todos los LED |
+| `2` | Fuerza `OCUPADA` (rojo) en todos los LED |
+| `3` | Fuerza `RESERVADA` (ámbar) en todos los LED |
 | `0` | Vuelve al modo red (cada LED con el estado de su mesa) |
 
-Un mensaje MQTT de estado cancela el modo prueba. La reconexión de WiFi y de MQTT no usa `delay()`, así los LED y el monitor siguen respondiendo. Al conectar, la placa publica `online` (retenido) en `atiendete/mesa/{numero}/conexion` de cada mesa del arreglo y se suscribe a `atiendete/mesa/{numero}/estado` de cada una. Cada LED cambia solo cuando llega el estado de su mesa. Sin WiFi parpadean todos en rojo. Si una mesa todavía no tiene sesión MQTT, parpadea en rojo solo ese LED.
+Un mensaje MQTT de estado de mesa cancela el modo prueba. La reconexión de WiFi y de MQTT no usa `delay()`, así los LED y el monitor siguen respondiendo. Al conectar, la placa publica `online` (retenido) en `atiendete/mesa/{numero}/conexion` de cada mesa del arreglo y se suscribe a `atiendete/mesa/{numero}/ocupacion` de cada una. Cada LED cambia solo cuando llega el estado de su mesa. Sin WiFi parpadean todos en blanco. Si una mesa todavía no tiene sesión MQTT, parpadea en blanco solo ese LED. El rojo fijo es solo "mesa ocupada".
 
 PubSubClient solo publica en QoS 0. El `online` igual va retenido. El Last Will `offline` va en QoS 1 y retenido, que es lo que la librería permite en el testamento. Hay una sesión por mesa porque la librería solo admite un testamento por conexión; así cada mesa tiene el suyo y el backend las ve online por separado.
 
@@ -480,7 +501,7 @@ PubSubClient solo publica en QoS 0. El `online` igual va retenido. El Last Will 
 npm test
 ```
 
-Cubren el total en céntimos (los adicionales se suman al unitario y después se multiplica por la cantidad; quitar ingredientes no descuenta), la cadena de estados, el calendario de Lima, el texto `online`/`offline` y el traductor de paso.
+Cubren el total en céntimos (los adicionales se suman al unitario y después se multiplica por la cantidad; quitar ingredientes no descuenta), la cadena de estados del pedido, los tres estados de mesa, el calendario de Lima, el texto `online`/`offline` y el traductor de paso.
 
 ## Scripts
 
