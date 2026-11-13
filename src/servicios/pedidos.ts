@@ -3,6 +3,7 @@ import type { Contexto } from '../contexto.js'
 import { aNumero, calcularTotal, type LineaCalculo } from '../dominio/dinero.js'
 import { esEstadoPedido, transicionPermitida, type EstadoPedido } from '../dominio/estados.js'
 import type { Idioma } from '../dominio/idiomas.js'
+import { rangoDeHoy } from '../dominio/tiempo.js'
 import { ErrorHttp } from '../errores.js'
 import { publicarEstadoMesa } from '../mqtt.js'
 import { anunciarEstadoMesa } from './mesas.js'
@@ -156,6 +157,19 @@ export async function obtenerPedidoCliente(ctx: Contexto, id: number): Promise<P
   const pedido = await cargarPedido(ctx.prisma, id)
   if (!pedido) throw new ErrorHttp(404, 'Pedido no encontrado')
   return pedidoADto(pedido, pedido.idioma)
+}
+
+/** Pedidos de hoy de una mesa, el más reciente primero, en el idioma de cada pedido (vista del cliente). */
+export async function listarPedidosMesa(ctx: Contexto, numero: number): Promise<PedidoDto[]> {
+  const mesa = await ctx.prisma.mesa.findUnique({ where: { numero } })
+  if (!mesa) throw new ErrorHttp(404, 'Mesa no encontrada')
+  const { inicio, fin } = rangoDeHoy()
+  const pedidos = await ctx.prisma.pedido.findMany({
+    where: { mesaId: mesa.id, creadoEn: { gte: inicio, lt: fin } },
+    include: includePedido,
+    orderBy: { creadoEn: 'desc' },
+  })
+  return pedidos.map((pedido) => pedidoADto(pedido, pedido.idioma))
 }
 
 export async function listarPedidosCocina(
