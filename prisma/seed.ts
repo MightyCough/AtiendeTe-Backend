@@ -29,6 +29,8 @@ type ClaveIngrediente = (typeof ingredientes)[number]['clave']
 
 type ProductoSeed = {
   precio: string
+  /** Ruta de la foto. Los archivos viven en AtiendeTe-Frontend/public/menu y se sirven con el frontend. */
+  imagen: string
   es: string
   en: string
   descripcionEs: string
@@ -51,6 +53,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '18.00',
         es: 'Cuarto de pollo broaster',
+        imagen: '/menu/cuarto-pollo-broaster.jpg',
         en: 'Quarter broaster chicken',
         descripcionEs: 'Pierna y muslo crocantes, con papas fritas y ensalada fresca.',
         descripcionEn: 'Crispy leg and thigh, with fries and fresh salad.',
@@ -60,6 +63,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '32.00',
         es: 'Medio pollo broaster',
+        imagen: '/menu/medio-pollo-broaster.jpg',
         en: 'Half broaster chicken',
         descripcionEs: 'Medio pollo crocante, con papas fritas y ensalada fresca.',
         descripcionEn: 'Half crispy chicken, with fries and fresh salad.',
@@ -69,6 +73,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '16.00',
         es: 'Alitas broaster (6)',
+        imagen: '/menu/alitas-broaster.jpg',
         en: 'Broaster wings (6)',
         descripcionEs: 'Seis alitas crocantes servidas con papas fritas.',
         descripcionEn: 'Six crispy wings served with fries.',
@@ -84,6 +89,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '14.00',
         es: 'Hamburguesa clásica',
+        imagen: '/menu/hamburguesa-clasica.jpg',
         en: 'Classic burger',
         descripcionEs: 'Carne de res a la plancha, pan brioche, vegetales y salsas, con papas fritas.',
         descripcionEn: 'Grilled beef, brioche bun, vegetables and sauces, with fries.',
@@ -93,6 +99,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '20.00',
         es: 'Hamburguesa royal',
+        imagen: '/menu/hamburguesa-royal.jpg',
         en: 'Royal burger',
         descripcionEs: 'Doble carne, queso fundido y tocino, con papas fritas.',
         descripcionEn: 'Double beef, melted cheese and bacon, with fries.',
@@ -102,6 +109,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '16.00',
         es: 'Hamburguesa de pollo',
+        imagen: '/menu/hamburguesa-pollo.jpg',
         en: 'Chicken burger',
         descripcionEs: 'Filete de pollo crocante, lechuga y mayonesa, con papas fritas.',
         descripcionEn: 'Crispy chicken fillet, lettuce and mayonnaise, with fries.',
@@ -117,6 +125,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '12.00',
         es: 'Salchipapa clásica',
+        imagen: '/menu/salchipapa-clasica.jpg',
         en: 'Classic salchipapa',
         descripcionEs: 'Papas fritas con salchicha en tiras y salsas de la casa.',
         descripcionEn: 'Fries with sliced sausage and house sauces.',
@@ -126,6 +135,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '18.00',
         es: 'Salchipapa broaster',
+        imagen: '/menu/salchipapa-broaster.jpg',
         en: 'Broaster salchipapa',
         descripcionEs: 'Papas fritas con trozos de pollo broaster y salsas.',
         descripcionEn: 'Fries with broaster chicken pieces and sauces.',
@@ -135,6 +145,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '22.00',
         es: 'Salchipapa royal',
+        imagen: '/menu/salchipapa-royal.jpg',
         en: 'Royal salchipapa',
         descripcionEs: 'Papas fritas con salchicha, pollo broaster, huevo y queso.',
         descripcionEn: 'Fries with sausage, broaster chicken, egg and cheese.',
@@ -150,6 +161,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '5.00',
         es: 'Inca Kola 500 ml',
+        imagen: '/menu/inca-kola.jpg',
         en: 'Inca Kola 500 ml',
         descripcionEs: 'La gaseosa dorada del Perú, bien fría.',
         descripcionEn: "Peru's golden soda, served cold.",
@@ -159,6 +171,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '4.50',
         es: 'Chicha morada',
+        imagen: '/menu/chicha-morada.jpg',
         en: 'Purple corn drink',
         descripcionEs: 'Vaso de chicha morada con limón y especias.',
         descripcionEn: 'Glass of purple corn drink with lime and spices.',
@@ -168,6 +181,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '7.00',
         es: 'Limonada frozen',
+        imagen: '/menu/limonada-frozen.jpg',
         en: 'Frozen lemonade',
         descripcionEs: 'Limonada helada, espesa y un poco ácida.',
         descripcionEn: 'Icy, thick and slightly tart lemonade.',
@@ -177,6 +191,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '3.00',
         es: 'Agua mineral',
+        imagen: '/menu/agua-mineral.jpg',
         en: 'Mineral water',
         descripcionEs: 'Botella de agua sin gas, 625 ml.',
         descripcionEn: 'Still water bottle, 625 ml.',
@@ -192,6 +207,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '6.00',
         es: 'Mazamorra morada',
+        imagen: '/menu/mazamorra-morada.jpg',
         en: 'Purple corn pudding',
         descripcionEs: 'Postre de maíz morado con frutas y canela.',
         descripcionEn: 'Purple corn pudding with fruit and cinnamon.',
@@ -201,6 +217,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '6.00',
         es: 'Arroz con leche',
+        imagen: '/menu/arroz-con-leche.jpg',
         en: 'Rice pudding',
         descripcionEs: 'Arroz con leche, canela y clavo de olor.',
         descripcionEn: 'Rice pudding with cinnamon and clove.',
@@ -210,6 +227,7 @@ const menu: readonly CategoriaSeed[] = [
       {
         precio: '8.00',
         es: 'Suspiro a la limeña',
+        imagen: '/menu/suspiro-limeno.jpg',
         en: 'Lima sigh',
         descripcionEs: 'Manjarblanco con merengue de oporto.',
         descripcionEn: 'Dulce de leche custard topped with port meringue.',
@@ -289,7 +307,7 @@ async function main(): Promise<void> {
             productos: {
               create: categoria.productos.map((producto, indiceProducto) => ({
                 precio: producto.precio,
-                imagenUrl: null,
+                imagenUrl: producto.imagen,
                 disponible: true,
                 orden: indiceProducto + 1,
                 traducciones: {

@@ -144,7 +144,7 @@ No hay autenticación.
 
 `GET /api/menu?lang=es` o `lang=en`. Si falta `lang`, se usa español. Si una traducción no existe, se devuelve la española.
 
-Respuesta: un arreglo de categorías. `ingredientes` son los que el cliente puede quitar. `imagenUrl` es `null` en la semilla (el frontend muestra la tarjeta sin foto).
+Respuesta: un arreglo de categorías. `ingredientes` son los que el cliente puede quitar. `imagenUrl` es una ruta relativa al frontend en la semilla (por ejemplo `/menu/hamburguesa-clasica.jpg`; los archivos viven en `AtiendeTe-Frontend/public/menu`). Si es `null` o la imagen no carga, el frontend dibuja una ilustración.
 
 ```json
 [
@@ -157,7 +157,7 @@ Respuesta: un arreglo de categorías. `ingredientes` son los que el cliente pued
         "nombre": "Cuarto de pollo broaster",
         "descripcion": "Pierna y muslo crocantes, con papas fritas y ensalada fresca.",
         "precio": 18,
-        "imagenUrl": null,
+        "imagenUrl": "/menu/cuarto-pollo-broaster.jpg",
         "disponible": true,
         "adicionales": [
           { "id": 4, "nombre": "Papas extra", "precioExtra": 4 },
@@ -190,6 +190,8 @@ Con `lang=en` el mismo producto se llama `Quarter broaster chicken` y el adicion
 ```json
 { "numero": 1, "estado": "RESERVADA" }
 ```
+
+`GET /api/mesas/1/pedidos` devuelve los pedidos de **hoy** (día de Lima) de esa mesa, el más reciente primero. Cada pedido tiene la misma forma que `GET /api/pedidos/1`, en el idioma con que se pidió. Si hoy no hay ninguno devuelve `[]`. 404 si la mesa no existe, 400 si el número no es válido. Sirve para que el cliente que escanea el QR vea todos los pedidos de su mesa y pueda pedir otra vez.
 
 ### Pedidos
 
